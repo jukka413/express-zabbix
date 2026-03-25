@@ -1,9 +1,11 @@
 import asyncio
+import logging
 import uvicorn
 from contextlib import asynccontextmanager
 from http import HTTPStatus
 from uuid import UUID
 
+import asyncpg
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -16,6 +18,8 @@ from pybotx import (
     build_command_accepted_response,
 )
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -24,13 +28,62 @@ from pybotx import (
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    cts_url: str         # только хост, например: cts.example.com (переменная CTS_URL в .env)
+    cts_url: str
     bot_id: UUID
     secret_key: str
     port: int = 8081
 
+    db_host: str = "localhost"
+    db_port: int = 5432
+    db_name: str = "zabbix_bot"
+    db_user: str
+    db_password: str
+
 
 settings = Settings()
+
+
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
+
+db_pool: asyncpg.Pool | None = None
+
+
+async def get_pool() -> asyncpg.Pool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialized")
+    return db_pool
+
+
+async def init_db(pool: asyncpg.Pool) -> None:
+    """Создаёт таблицу если её ещё нет."""
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS zbx_user (
+            id          SERIAL PRIMARY KEY,
+            ad_login    TEXT NOT NULL UNIQUE,
+            group_chat_id TEXT NOT NULL,
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    """)
+
+
+async def save_user(pool: asyncpg.Pool, ad_login: str, group_chat_id: str) -> bool:
+    """
+    Сохраняет пользователя. Возвращает True если запись добавлена,
+    False если уже существует (ON CONFLICT DO NOTHING).
+    """
+    result = await pool.execute(
+        """
+        INSERT INTO zbx_user (ad_login, group_chat_id)
+        VALUES ($1, $2)
+        ON CONFLICT (ad_login) DO NOTHING
+        """,
+        ad_login,
+        group_chat_id,
+    )
+    # asyncpg возвращает строку вида "INSERT 0 1" или "INSERT 0 0"
+    return result.endswith("1")
 
 
 # ---------------------------------------------------------------------------
@@ -42,10 +95,29 @@ collector = HandlerCollector()
 
 @collector.default_message_handler
 async def default_handler(message: IncomingMessage, bot: Bot) -> None:
-    text = (message.body or "").strip()
+    text = (message.body or "").strip().lower()
+
+    if text == "zabbix":
+        ad_login = message.sender.ad_login
+        group_chat_id = str(message.chat.id)
+
+        if not ad_login:
+            await bot.answer_message("Не удалось получить ваш AD-логин.")
+            return
+
+        pool = await get_pool()
+        inserted = await save_user(pool, ad_login, group_chat_id)
+
+        if inserted:
+            await bot.answer_message(f"✅ Вы зарегистрированы: {ad_login}")
+        else:
+            await bot.answer_message(f"ℹ️ Вы уже зарегистрированы: {ad_login}")
+        return
+
     if not text:
         await bot.answer_message("йо")
         return
+
     await bot.answer_message(f"Ты написал: {text}")
 
 
@@ -67,9 +139,25 @@ bot = Bot(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global db_pool
+    db_pool = await asyncpg.create_pool(
+        host=settings.db_host,
+        port=settings.db_port,
+        database=settings.db_name,
+        user=settings.db_user,
+        password=settings.db_password,
+        min_size=2,
+        max_size=10,
+    )
+    await init_db(db_pool)
+    logger.info("Database pool created")
+
     await bot.startup()
     yield
+
     await bot.shutdown()
+    await db_pool.close()
+    logger.info("Database pool closed")
 
 
 app = FastAPI(title="BotX backend", lifespan=lifespan)
@@ -81,7 +169,6 @@ app = FastAPI(title="BotX backend", lifespan=lifespan)
 
 @app.post("/command")
 async def command_handler(request: Request) -> JSONResponse:
-    # Fire-and-forget: BotX обрабатывает команду асинхронно
     asyncio.create_task(
         bot.async_execute_raw_bot_command(
             await request.json(),
