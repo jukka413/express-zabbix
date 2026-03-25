@@ -99,6 +99,7 @@ async def status_handler(request: Request) -> JSONResponse:
     status = await bot.raw_get_status(
         dict(request.query_params),
         request_headers=request.headers,
+        verify_request=False,
     )
     return JSONResponse(status)
 
