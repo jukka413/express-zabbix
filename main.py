@@ -61,7 +61,7 @@ async def init_db(pool: asyncpg.Pool) -> None:
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS zbx_user (
             group_chat_id TEXT,
-            ad_login    TEXT NOT NULL UNIQUE
+            ad_login      TEXT NOT NULL UNIQUE
         )
     """)
 
@@ -210,20 +210,28 @@ async def callback_handler(request: Request) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 class SendMessageRequest(BaseModel):
-    chat_id: str
+    ad_login: str
     message: str
 
 
 @app.post("/api/send")
 async def send_message_to_chat(payload: SendMessageRequest) -> JSONResponse:
-    try:
-        chat_id = UUID(payload.chat_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="chat_id must be valid UUID") from exc
-
     text = payload.message.strip()
     if not text:
         raise HTTPException(status_code=400, detail="message must not be empty")
+
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT group_chat_id FROM zbx_user WHERE ad_login = $1",
+        payload.ad_login,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"User '{payload.ad_login}' not found")
+
+    try:
+        chat_id = UUID(row["group_chat_id"])
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail="Stored group_chat_id is not a valid UUID") from exc
 
     try:
         await bot.send_message(
@@ -235,7 +243,7 @@ async def send_message_to_chat(payload: SendMessageRequest) -> JSONResponse:
         raise HTTPException(status_code=502, detail=f"BotX error: {exc}") from exc
 
     return JSONResponse(
-        {"status": "ok", "chat_id": str(chat_id), "message": text},
+        {"status": "ok", "ad_login": payload.ad_login, "chat_id": str(chat_id), "message": text},
         status_code=200,
     )
 
