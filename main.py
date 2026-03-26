@@ -60,10 +60,8 @@ async def init_db(pool: asyncpg.Pool) -> None:
     """Создаёт таблицу если её ещё нет."""
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS zbx_user (
-            id          SERIAL PRIMARY KEY,
-            ad_login    TEXT NOT NULL UNIQUE,
-            group_chat_id TEXT NOT NULL,
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            group_chat_id TEXT,
+            ad_login    TEXT NOT NULL UNIQUE
         )
     """)
 
@@ -169,11 +167,10 @@ app = FastAPI(title="BotX backend", lifespan=lifespan)
 
 @app.post("/command")
 async def command_handler(request: Request) -> JSONResponse:
-    asyncio.create_task(
-        bot.async_execute_raw_bot_command(
-            await request.json(),
-            request_headers=request.headers,
-        )
+    # async_execute_raw_bot_command запускает задачу внутри себя, не возвращает корутину
+    bot.async_execute_raw_bot_command(
+        await request.json(),
+        request_headers=request.headers,
     )
     return JSONResponse(
         build_command_accepted_response(),
@@ -183,11 +180,15 @@ async def command_handler(request: Request) -> JSONResponse:
 
 @app.get("/status")
 async def status_handler(request: Request) -> JSONResponse:
-    status = await bot.raw_get_status(
-        dict(request.query_params),
-        request_headers=request.headers,
-        verify_request=False,
-    )
+    try:
+        status = await bot.raw_get_status(
+            dict(request.query_params),
+            request_headers=request.headers,
+            verify_request=False,
+        )
+    except ValueError:
+        # Запрос без обязательных параметров (например healthcheck) — возвращаем 200
+        return JSONResponse({"status": "ok"})
     return JSONResponse(status)
 
 
