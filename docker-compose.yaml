@@ -1,0 +1,10 @@
+sevices:
+  bot:
+    image: siiitonik/zabbix_bot
+    ports:
+      - "${PORT}:${PORT}"
+    env_file:
+      - .env
+    #Если БД в контейнере, но в другом compose
+    #extra_hosts:
+    #  -"host.docker.internal:host-gateway"
