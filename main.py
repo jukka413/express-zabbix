@@ -248,7 +248,7 @@ async def send_message_to_chat(payload: SendMessageRequest) -> JSONResponse:
     pool = await get_pool()
     row = await pool.fetchrow(
         "SELECT group_chat_id FROM zbx_user WHERE ad_login = $1",
-        payload.ad_login,
+        payload.ad_login.lower(),
     )
     if row is None:
         raise HTTPException(status_code=404, detail=f"User '{payload.ad_login}' not found")
