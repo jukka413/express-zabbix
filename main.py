@@ -141,7 +141,7 @@ async def default_handler(message: IncomingMessage, bot: Bot) -> None:
         await bot.answer_message("йо")
         return
 
-    await bot.answer_message(f"Ты написал: {text}")
+#    await bot.answer_message(f"Ты написал: {text}")
 
 
 bot = Bot(
